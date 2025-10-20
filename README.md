@@ -159,7 +159,3 @@ MIT License - see [LICENSE](LICENSE) file for details.
 ## Contributing
 
 Issues and pull requests welcome! Please include tests for any new functionality.
-
-## Author
-
-Jad Nohra
