@@ -183,5 +183,5 @@ end
 EOF
 echo ""
 echo "To update the tap manually:"
-echo "  ./infra/update-homebrew.sh v${VERSION}"
+echo "  ./brew/update-homebrew.sh v${VERSION}"
 echo ""

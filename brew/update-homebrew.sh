@@ -2,7 +2,7 @@
 #
 # update-homebrew.sh - Manually update Homebrew tap
 #
-# Usage: ./infra/update-homebrew.sh v1.0.0
+# Usage: ./brew/update-homebrew.sh v1.0.0
 #
 
 set -e

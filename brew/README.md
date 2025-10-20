@@ -1,6 +1,6 @@
-# Infrastructure
+# Homebrew Automation
 
-This directory contains automation for releasing and distributing safe-squash.
+This directory contains Homebrew formula and automation scripts for safe-squash.
 
 ## Homebrew Distribution
 
@@ -27,7 +27,7 @@ git push origin v1.0.0
 If you need to manually update the Homebrew formula:
 
 ```bash
-./infra/update-homebrew.sh v1.0.0
+./brew/update-homebrew.sh v1.0.0
 ```
 
 This will:
@@ -64,7 +64,7 @@ This will:
 
 ### For Manual Updates
 
-Just run `./infra/update-homebrew.sh <version>` - it will clone the tap repo if needed.
+Just run `./brew/update-homebrew.sh <version>` - it will clone the tap repo if needed.
 
 ## Files
 
