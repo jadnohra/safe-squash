@@ -3,7 +3,7 @@
 [![Tests](https://github.com/jadnohra/safe-squash/actions/workflows/test.yml/badge.svg)](https://github.com/jadnohra/safe-squash/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A simple, robust tool to squash all commits on your branch into one commit.
+A simple, robust tool to squash git commits.
 
 ## Installation
 
