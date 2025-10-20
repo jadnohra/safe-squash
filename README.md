@@ -118,20 +118,39 @@ safe-squash --test
 - After squashing, use `git push --force-with-lease` if branch was pushed
 - Self-testing with `--test` flag - no separate test file needed
 
-## Quick Start (For Maintainers)
+## Releasing (For Maintainers)
 
-First-time setup - run this once to publish everything:
+### One-Time Setup for Auto Homebrew Updates
+
+1. **Create homebrew-tap repository:**
+   - Go to https://github.com/new
+   - Name: `homebrew-tap`
+   - Public, empty (no README/license/gitignore)
+
+2. **Create GitHub token:**
+   - Go to https://github.com/settings/tokens/new
+   - Scopes: `repo` + `workflow`
+   - Copy the token
+
+3. **Add token to safe-squash secrets:**
+   - Go to https://github.com/jadnohra/safe-squash/settings/secrets/actions
+   - New secret: `HOMEBREW_TAP_TOKEN`
+   - Paste your token
+
+### Create a Release
 
 ```bash
-cd ~/github/jadnohra/safe-squash
-./setup.sh
+# Create and push tag
+git tag v1.0.0
+git push origin v1.0.0
+
+# GitHub Actions automatically:
+# - Runs tests
+# - Creates GitHub release
+# - Updates Homebrew formula in homebrew-tap
 ```
 
-This will:
-- Create and push the homebrew-tap repository
-- Commit and push safe-squash
-- Create the v1.0.0 release tag
-- Trigger GitHub Actions to run tests and publish
+Users can then install with: `brew install jadnohra/tap/safe-squash`
 
 ## License
 

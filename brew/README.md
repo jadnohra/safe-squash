@@ -22,6 +22,22 @@ git push origin v1.0.0
 # GitHub Actions does the rest!
 ```
 
+### Testing Formula (Before Release)
+
+Test the formula will work before creating a release:
+
+```bash
+./brew/test-homebrew.sh v1.0.0
+```
+
+This validates:
+- Tag exists on GitHub
+- Tarball downloads correctly
+- SHA256 calculation works
+- Ruby syntax is valid
+- Formula installs with Homebrew (if brew available)
+- Tarball contains safe-squash script
+
 ### Manual Update
 
 If you need to manually update the Homebrew formula:
@@ -69,6 +85,7 @@ Just run `./brew/update-homebrew.sh <version>` - it will clone the tap repo if n
 ## Files
 
 - `homebrew-formula.rb` - Template formula (reference only)
+- `test-homebrew.sh` - Test formula before release
 - `update-homebrew.sh` - Manual update script
 - `README.md` - This file
 
