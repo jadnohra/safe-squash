@@ -5,30 +5,6 @@
 
 A simple, robust tool to squash all commits on your branch into one commit.
 
-## Quick Start (For Maintainers)
-
-First-time setup - run this once to publish everything:
-
-```bash
-cd ~/github/jadnohra/safe-squash
-./setup.sh
-```
-
-This will:
-- Create and push the homebrew-tap repository
-- Commit and push safe-squash
-- Create the v1.0.0 release tag
-- Trigger GitHub Actions to run tests and publish
-
-## Why safe-squash?
-
-- **Always safe** - Restores state if cancelled, optional backup branches for extra safety
-- **No rebase** - Uses `git reset --soft` for simplicity (no conflicts possible)
-- **Auto-detects base branch** - Finds main/master or parent branch automatically
-- **Clean messages** - Combines all commit messages for editing
-- **Smart cleanup** - Auto-removes backup branches on success
-- **Self-testing** - Integrated test suite with 13 comprehensive tests
-
 ## Installation
 
 ### Homebrew (macOS/Linux)
@@ -141,6 +117,21 @@ safe-squash --test
 - Won't run during merge/rebase/cherry-pick operations
 - After squashing, use `git push --force-with-lease` if branch was pushed
 - Self-testing with `--test` flag - no separate test file needed
+
+## Quick Start (For Maintainers)
+
+First-time setup - run this once to publish everything:
+
+```bash
+cd ~/github/jadnohra/safe-squash
+./setup.sh
+```
+
+This will:
+- Create and push the homebrew-tap repository
+- Commit and push safe-squash
+- Create the v1.0.0 release tag
+- Trigger GitHub Actions to run tests and publish
 
 ## License
 
