@@ -1,0 +1,687 @@
+#!/bin/bash
+#
+# safe-squash - Squash all commits since main/parent branch
+#
+# Usage:
+#   safe-squash           # No backup, squash to main/parent
+#   safe-squash --backup  # Create safety backup before squashing
+#   safe-squash --test    # Run integrated test suite
+#   safe-squash -h        # Show help
+#
+# Author: Jad Nohra
+# Date: 2025
+
+set -e  # Exit on error
+
+# Save script path for tests
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+
+# Color codes for output (muted, professional palette)
+# Following Terminus UI style - minimal, muted colors
+RED='\033[38;5;131m'      # Muted red (blocked)
+GREEN='\033[38;5;70m'     # Muted green (ready)
+YELLOW='\033[38;5;214m'   # Yellow-orange (active)
+BLUE='\033[38;5;245m'     # Medium gray (path/info)
+GRAY='\033[38;5;240m'     # Dark gray (metadata)
+TREE='\033[38;5;238m'     # Very dark gray (tree structure)
+NC='\033[0m'              # No Color
+BOLD='\033[1m'            # Bold
+
+# Show help
+if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
+    echo "safe-squash - Squash all commits since main/parent branch"
+    echo ""
+    echo "Usage:"
+    echo "  safe-squash           # Default (safe, restores if cancelled)"
+    echo "  safe-squash --backup  # Extra safety (keeps backup branch on failure)"
+    echo "  safe-squash --test    # Run integrated test suite"
+    echo ""
+    echo "How it works:"
+    echo "  1. Finds where your branch diverged from main/master/parent"
+    echo "  2. Shows all commits to be squashed"
+    echo "  3. Asks for confirmation (cancel = no changes)"
+    echo "  4. Squashes commits into one (preserves all changes)"
+    echo "  5. Opens editor for commit message"
+    echo ""
+    echo "Backup modes:"
+    echo "  Default: Safe, restores original state if you cancel"
+    echo "  --backup: Creates timestamped branch (auto-deleted on success)"
+    echo ""
+    echo "After squashing: git push --force-with-lease"
+    exit 0
+fi
+
+# Run tests if requested
+if [[ "$1" == "--test" ]]; then
+    # Disable exit on error for tests
+    set +e
+
+    # Save original directory
+    ORIGINAL_DIR="$(pwd)"
+
+    # Test counters
+    tests_passed=0
+    tests_failed=0
+
+    # Test helper functions
+    pass() {
+        echo -e "${GREEN}✓${NC} $1"
+        ((tests_passed++))
+    }
+
+    fail() {
+        echo -e "${RED}✗${NC} $1"
+        ((tests_failed++))
+    }
+
+    info() {
+        echo -e "${GRAY}  $1${NC}"
+    }
+
+    run_test() {
+        local test_name="$1"
+        echo ""
+        echo -e "${TREE}─────────────────────────────────────────────${NC}"
+        echo -e "${BLUE}$test_name${NC}"
+    }
+
+    # Create a test repository
+    create_test_repo() {
+        local repo_dir="$1"
+        mkdir -p "$repo_dir"
+        cd "$repo_dir"
+        git init -b main > /dev/null
+        git config user.email "test@example.com"
+        git config user.name "Test User"
+        echo "Initial content" > file.txt
+        git add file.txt
+        git commit -m "Initial commit" > /dev/null
+    }
+
+    # Create a feature branch with multiple commits
+    create_feature_branch() {
+        local branch_name="$1"
+        local num_commits="$2"
+        git checkout -b "$branch_name" > /dev/null
+        for i in $(seq 1 "$num_commits"); do
+            echo "Change $i" >> file.txt
+            git add file.txt
+            git commit -m "Commit $i on $branch_name" > /dev/null
+        done
+    }
+
+    # Test 1: Basic squash without backup
+    test_basic_squash() {
+        run_test "Basic squash without backup"
+        local test_dir="$TEST_BASE_DIR/test1"
+        create_test_repo "$test_dir"
+        create_feature_branch "feature1" 3
+        local commits_before=$(git rev-list --count main..HEAD)
+        local content_before=$(cat file.txt)
+        info "Created 3 commits on feature1"
+        info "Running squash..."
+        { echo "y"; echo "Test squash commit"; } | "$SCRIPT_PATH" > /dev/null 2>&1 || true
+        local commits_after=$(git rev-list --count main..HEAD)
+        local content_after=$(cat file.txt)
+        if [[ "$commits_before" -eq 3 ]] && [[ "$commits_after" -eq 1 ]] && [[ "$content_before" == "$content_after" ]]; then
+            pass "Squashed 3 commits into 1, content preserved"
+        else
+            fail "Expected 1 commit after squash, got $commits_after (before: $commits_before)"
+        fi
+        cd "$ORIGINAL_DIR" 2>/dev/null || cd /tmp
+    }
+
+    # Test 2: Squash with backup
+    test_squash_with_backup() {
+        run_test "Squash with backup (success case)"
+        local test_dir="$TEST_BASE_DIR/test2"
+        create_test_repo "$test_dir"
+        create_feature_branch "feature2" 2
+        info "Created 2 commits on feature2"
+        info "Running squash with --backup..."
+        { echo "y"; echo "Test squash with backup"; } | "$SCRIPT_PATH" --backup > /dev/null 2>&1 || true
+        local commits_after=$(git rev-list --count main..HEAD)
+        local backup_branches=$(git branch | grep -c "backup-squash" || true)
+        if [[ "$commits_after" -eq 1 ]] && [[ "$backup_branches" -eq 0 ]]; then
+            pass "Squashed successfully with backup, backup auto-deleted"
+        else
+            fail "Expected 1 commit and 0 backup branches, got $commits_after commits and $backup_branches backups"
+        fi
+        cd "$ORIGINAL_DIR" 2>/dev/null || cd /tmp
+    }
+
+    # Test 3: Cancel squash
+    test_cancel_squash() {
+        run_test "Cancel squash"
+        local test_dir="$TEST_BASE_DIR/test3"
+        create_test_repo "$test_dir"
+        create_feature_branch "feature3" 3
+        local commits_before=$(git rev-list --count main..HEAD)
+        local head_before=$(git rev-parse HEAD)
+        info "Created 3 commits on feature3"
+        info "Cancelling squash (answer 'n')..."
+        echo "n" | "$SCRIPT_PATH" > /dev/null 2>&1 || true
+        local commits_after=$(git rev-list --count main..HEAD)
+        local head_after=$(git rev-parse HEAD)
+        if [[ "$commits_before" -eq "$commits_after" ]] && [[ "$head_before" == "$head_after" ]]; then
+            pass "Cancelled squash, all commits preserved"
+        else
+            fail "Expected $commits_before commits after cancel, got $commits_after"
+        fi
+        cd "$ORIGINAL_DIR" 2>/dev/null || cd /tmp
+    }
+
+    # Test 4: Dirty working directory
+    test_dirty_working_dir() {
+        run_test "Dirty working directory (should fail)"
+        local test_dir="$TEST_BASE_DIR/test4"
+        create_test_repo "$test_dir"
+        create_feature_branch "feature4" 2
+        echo "Uncommitted change" >> file.txt
+        info "Created uncommitted changes"
+        info "Running squash (should fail)..."
+        if "$SCRIPT_PATH" > /dev/null 2>&1; then
+            fail "Squash should have failed with dirty working directory"
+        else
+            pass "Correctly rejected squash with dirty working directory"
+        fi
+        cd "$ORIGINAL_DIR" 2>/dev/null || cd /tmp
+    }
+
+    # Test 5: On main branch
+    test_on_main_branch() {
+        run_test "Run squash on main branch (should fail)"
+        local test_dir="$TEST_BASE_DIR/test5"
+        create_test_repo "$test_dir"
+        info "On main branch"
+        info "Running squash (should fail)..."
+        if "$SCRIPT_PATH" > /dev/null 2>&1; then
+            fail "Squash should have failed on main branch"
+        else
+            pass "Correctly rejected squash on main branch"
+        fi
+        cd "$ORIGINAL_DIR" 2>/dev/null || cd /tmp
+    }
+
+    # Test 6: No commits to squash
+    test_no_commits() {
+        run_test "No commits to squash"
+        local test_dir="$TEST_BASE_DIR/test6"
+        create_test_repo "$test_dir"
+        git checkout -b feature5 > /dev/null
+        info "Created branch with no new commits"
+        info "Running squash..."
+        if "$SCRIPT_PATH" > /dev/null 2>&1; then
+            pass "Correctly handled branch with no commits to squash"
+        else
+            fail "Should have exited gracefully with no commits"
+        fi
+        cd "$ORIGINAL_DIR" 2>/dev/null || cd /tmp
+    }
+
+    # Test 7: Content integrity
+    test_content_integrity() {
+        run_test "Content integrity after squash"
+        local test_dir="$TEST_BASE_DIR/test7"
+        create_test_repo "$test_dir"
+        create_feature_branch "feature6" 5
+        echo "File 2" > file2.txt
+        git add file2.txt
+        git commit -m "Add file2" > /dev/null
+        echo "File 3" > file3.txt
+        git add file3.txt
+        git commit -m "Add file3" > /dev/null
+        local file1_before=$(cat file.txt)
+        local file2_before=$(cat file2.txt)
+        local file3_before=$(cat file3.txt)
+        info "Created 7 commits with 3 files"
+        info "Running squash..."
+        { echo "y"; echo "Test content integrity squash"; } | "$SCRIPT_PATH" > /dev/null 2>&1 || true
+        local file1_after=$(cat file.txt)
+        local file2_after=$(cat file2.txt)
+        local file3_after=$(cat file3.txt)
+        if [[ "$file1_before" == "$file1_after" ]] && \
+           [[ "$file2_before" == "$file2_after" ]] && \
+           [[ "$file3_before" == "$file3_after" ]]; then
+            pass "All file contents preserved after squash"
+        else
+            fail "File contents changed after squash"
+        fi
+        cd "$ORIGINAL_DIR" 2>/dev/null || cd /tmp
+    }
+
+    # Test 8: Empty commit message (should fail validation)
+    test_empty_commit_message() {
+        run_test "Empty commit message (should fail)"
+        local test_dir="$TEST_BASE_DIR/test8"
+        create_test_repo "$test_dir"
+        create_feature_branch "feature8" 2
+        info "Created 2 commits"
+        info "Providing empty commit message..."
+        { echo "y"; echo ""; } | "$SCRIPT_PATH" > /dev/null 2>&1
+        local exit_code=$?
+        if [[ $exit_code -ne 0 ]]; then
+            pass "Correctly rejected empty commit message"
+        else
+            fail "Should have rejected empty commit message"
+        fi
+        cd "$ORIGINAL_DIR" 2>/dev/null || cd /tmp
+    }
+
+    # Test 9: Single commit to squash
+    test_single_commit() {
+        run_test "Single commit to squash"
+        local test_dir="$TEST_BASE_DIR/test9"
+        create_test_repo "$test_dir"
+        create_feature_branch "feature9" 1
+        info "Created 1 commit"
+        info "Running squash..."
+        { echo "y"; echo "Single commit squashed"; } | "$SCRIPT_PATH" > /dev/null 2>&1 || true
+        local commits_after=$(git rev-list --count main..HEAD)
+        if [[ $commits_after -eq 1 ]]; then
+            pass "Single commit squashed successfully"
+        else
+            fail "Expected 1 commit after squash, got $commits_after"
+        fi
+        cd "$ORIGINAL_DIR" 2>/dev/null || cd /tmp
+    }
+
+    # Test 10: Detached HEAD state (should fail)
+    test_detached_head() {
+        run_test "Detached HEAD state (should fail)"
+        local test_dir="$TEST_BASE_DIR/test13"
+        create_test_repo "$test_dir"
+        create_feature_branch "feature13" 2
+
+        # Detach HEAD
+        git checkout HEAD~0 > /dev/null 2>&1
+
+        info "Detached HEAD state"
+        info "Running squash (should fail)..."
+
+        if "$SCRIPT_PATH" > /dev/null 2>&1; then
+            fail "Squash should have failed with detached HEAD"
+        else
+            pass "Correctly rejected squash with detached HEAD"
+        fi
+        cd "$ORIGINAL_DIR" 2>/dev/null || cd /tmp
+    }
+
+    # Test 14: Merge in progress (should fail)
+    test_merge_in_progress() {
+        run_test "Merge in progress (should fail)"
+        local test_dir="$TEST_BASE_DIR/test14"
+        create_test_repo "$test_dir"
+        create_feature_branch "feature14" 1
+
+        # Create conflicting branches
+        git checkout main > /dev/null 2>&1
+        echo "main change" >> file.txt
+        git add file.txt
+        git commit -m "Main change" > /dev/null 2>&1
+
+        git checkout feature14 > /dev/null 2>&1
+        echo "feature change" >> file.txt
+        git add file.txt
+        git commit -m "Feature change" > /dev/null 2>&1
+
+        # Start merge (will create conflict)
+        git merge main > /dev/null 2>&1 || true
+
+        info "Merge in progress with conflicts"
+        info "Running squash (should fail)..."
+
+        if "$SCRIPT_PATH" > /dev/null 2>&1; then
+            fail "Squash should have failed with merge in progress"
+        else
+            pass "Correctly rejected squash with merge in progress"
+        fi
+        cd "$ORIGINAL_DIR" 2>/dev/null || cd /tmp
+    }
+
+    # Test 15: Rebase in progress (should fail)
+    test_rebase_in_progress() {
+        run_test "Rebase in progress (should fail)"
+        local test_dir="$TEST_BASE_DIR/test15"
+        create_test_repo "$test_dir"
+        create_feature_branch "feature15" 1
+
+        # Create conflicting branches
+        git checkout main > /dev/null 2>&1
+        echo "main rebase change" >> file.txt
+        git add file.txt
+        git commit -m "Main rebase change" > /dev/null 2>&1
+
+        git checkout feature15 > /dev/null 2>&1
+        echo "feature rebase change" >> file.txt
+        git add file.txt
+        git commit -m "Feature rebase change" > /dev/null 2>&1
+
+        # Start rebase (will create conflict)
+        git rebase main > /dev/null 2>&1 || true
+
+        info "Rebase in progress with conflicts"
+        info "Running squash (should fail)..."
+
+        if "$SCRIPT_PATH" > /dev/null 2>&1; then
+            fail "Squash should have failed with rebase in progress"
+        else
+            pass "Correctly rejected squash with rebase in progress"
+        fi
+        cd "$ORIGINAL_DIR" 2>/dev/null || cd /tmp
+    }
+
+    # Test 13: Cherry-pick in progress (should fail)
+    test_cherrypick_in_progress() {
+        run_test "Cherry-pick in progress (should fail)"
+        local test_dir="$TEST_BASE_DIR/test17"
+        create_test_repo "$test_dir"
+        create_feature_branch "feature17" 1
+
+        # Create another branch with conflicting commit
+        git checkout main > /dev/null 2>&1
+        git checkout -b other-branch > /dev/null 2>&1
+        echo "other branch change" >> file.txt
+        git add file.txt
+        git commit -m "Other branch commit" > /dev/null 2>&1
+        local cherry_commit=$(git rev-parse HEAD)
+
+        # Go to feature branch and try cherry-pick
+        git checkout feature17 > /dev/null 2>&1
+        echo "feature17 change" >> file.txt
+        git add file.txt
+        git commit -m "Feature17 commit" > /dev/null 2>&1
+
+        # Start cherry-pick (will create conflict)
+        git cherry-pick "$cherry_commit" > /dev/null 2>&1 || true
+
+        info "Cherry-pick in progress with conflicts"
+        info "Running squash (should fail)..."
+
+        if "$SCRIPT_PATH" > /dev/null 2>&1; then
+            fail "Squash should have failed with cherry-pick in progress"
+        else
+            pass "Correctly rejected squash with cherry-pick in progress"
+        fi
+        cd "$ORIGINAL_DIR" 2>/dev/null || cd /tmp
+    }
+
+    # Setup test environment
+    TEST_BASE_DIR="/tmp/squash-test-$$"
+
+    # Check if test directory already exists (stale from previous run?)
+    if [[ -d "$TEST_BASE_DIR" ]]; then
+        echo -e "${YELLOW}⚠ Test directory already exists:${NC} $TEST_BASE_DIR"
+        echo -n "This might be from a previous failed run. [R]ecreate or [E]xit? (r/E): "
+        read -r choice
+        if [[ "$choice" == "r" ]] || [[ "$choice" == "R" ]]; then
+            echo -e "${GRAY}  Removing old test directory...${NC}"
+            rm -rf "$TEST_BASE_DIR"
+        else
+            echo "Aborted"
+            exit 1
+        fi
+    fi
+
+    # Create test base directory
+    mkdir -p "$TEST_BASE_DIR"
+    if [[ ! -d "$TEST_BASE_DIR" ]]; then
+        echo -e "${RED}Error: Failed to create test directory${NC}"
+        exit 1
+    fi
+
+    # Cleanup on exit (success or failure)
+    cleanup_tests() {
+        if [[ -d "$TEST_BASE_DIR" ]]; then
+            cd "$ORIGINAL_DIR" 2>/dev/null || cd /tmp
+            rm -rf "$TEST_BASE_DIR"
+        fi
+    }
+    trap cleanup_tests EXIT
+
+    # Run all tests
+    echo -e "${TREE}─────────────────────────────────────────────${NC}"
+    echo -e "${BOLD}squash test suite${NC}"
+    echo -e "${GRAY}$SCRIPT_PATH${NC}"
+    echo -e "${GRAY}test directory: $TEST_BASE_DIR${NC}"
+
+    test_basic_squash
+    test_squash_with_backup
+    test_cancel_squash
+    test_dirty_working_dir
+    test_on_main_branch
+    test_no_commits
+    test_content_integrity
+    test_empty_commit_message
+    test_single_commit
+    test_detached_head
+    test_merge_in_progress
+    test_rebase_in_progress
+    test_cherrypick_in_progress
+
+    # Summary
+    echo ""
+    echo -e "${TREE}─────────────────────────────────────────────${NC}"
+    if [[ $tests_failed -gt 0 ]]; then
+        echo -e "${RED}✗ $tests_failed failed${NC}  ${GREEN}✓ $tests_passed passed${NC}"
+        echo -e "${GRAY}test directory: $TEST_BASE_DIR${NC}"
+        exit 1
+    else
+        echo -e "${GREEN}✓ All $tests_passed tests passed${NC}"
+        exit 0
+    fi
+fi
+
+# Parse arguments
+create_backup=false
+if [[ "$1" == "--backup" ]]; then
+    create_backup=true
+    echo -e "${BLUE}Backup mode enabled${NC}"
+fi
+
+# Check if we're in a git repository
+if ! git rev-parse --git-dir > /dev/null 2>&1; then
+    echo -e "${RED}Error: Not in a git repository${NC}"
+    exit 1
+fi
+
+# Check for clean working directory
+if [[ -n $(git status --porcelain) ]]; then
+    echo -e "${RED}Error: Working directory is not clean${NC}"
+    echo "Please commit or stash your changes first"
+    exit 1
+fi
+
+# Check for git operations in progress
+git_dir=$(git rev-parse --git-dir)
+if [[ -f "$git_dir/MERGE_HEAD" ]]; then
+    echo -e "${RED}Error: Merge in progress${NC}"
+    echo "Please complete or abort the merge first: git merge --abort"
+    exit 1
+fi
+
+if [[ -d "$git_dir/rebase-merge" ]] || [[ -d "$git_dir/rebase-apply" ]]; then
+    echo -e "${RED}Error: Rebase in progress${NC}"
+    echo "Please complete or abort the rebase first: git rebase --abort"
+    exit 1
+fi
+
+if [[ -f "$git_dir/CHERRY_PICK_HEAD" ]]; then
+    echo -e "${RED}Error: Cherry-pick in progress${NC}"
+    echo "Please complete or abort the cherry-pick first: git cherry-pick --abort"
+    exit 1
+fi
+
+# Get current branch
+current_branch=$(git branch --show-current)
+if [[ -z "$current_branch" ]]; then
+    echo -e "${RED}Error: Not on a branch (detached HEAD?)${NC}"
+    exit 1
+fi
+
+# Don't squash on main/master
+if [[ "$current_branch" == "main" ]] || [[ "$current_branch" == "master" ]]; then
+    echo -e "${RED}Error: Cannot squash on main/master branch${NC}"
+    exit 1
+fi
+
+# Find the base branch (main, master, or parent)
+base_branch=""
+
+# Check for main/master
+if git rev-parse --verify main >/dev/null 2>&1; then
+    base_branch="main"
+elif git rev-parse --verify master >/dev/null 2>&1; then
+    base_branch="master"
+else
+    # Try to find parent branch (where we branched from)
+    # This finds the branch that our current branch diverged from
+    parent=$(git show-branch -a 2>/dev/null \
+        | grep '\*' \
+        | grep -v "$current_branch" \
+        | head -n1 \
+        | sed 's/.*\[\(.*\)\].*/\1/' \
+        | sed 's/[\^~].*//')
+
+    if [[ -n "$parent" ]]; then
+        echo -e "${YELLOW}Detected parent branch: $parent${NC}"
+        echo -n "Squash to [1] $parent or [2] main/master? (1/2): "
+        read -r choice
+        if [[ "$choice" == "2" ]]; then
+            if git rev-parse --verify main >/dev/null 2>&1; then
+                base_branch="main"
+            elif git rev-parse --verify master >/dev/null 2>&1; then
+                base_branch="master"
+            else
+                echo -e "${RED}Error: main/master branch not found${NC}"
+                exit 1
+            fi
+        else
+            base_branch="$parent"
+        fi
+    fi
+fi
+
+if [[ -z "$base_branch" ]]; then
+    echo -e "${RED}Error: Could not determine base branch${NC}"
+    echo "Please specify main, master, or parent branch"
+    exit 1
+fi
+
+# Find merge base (where we diverged)
+merge_base=$(git merge-base "$base_branch" HEAD)
+if [[ -z "$merge_base" ]]; then
+    echo -e "${RED}Error: Could not find merge base with $base_branch${NC}"
+    exit 1
+fi
+
+# Count commits to be squashed
+commit_count=$(git rev-list --count "$merge_base"..HEAD)
+if [[ "$commit_count" -eq 0 ]]; then
+    echo -e "${YELLOW}No commits to squash (already up to date with $base_branch)${NC}"
+    exit 0
+fi
+
+# Show what will be squashed
+echo -e "${BLUE}Will squash $commit_count commit(s) since $base_branch:${NC}"
+git log --oneline "$merge_base"..HEAD
+echo ""
+
+# Confirm
+echo -n "Continue? (y/N): "
+read -r confirm
+if [[ "$confirm" != "y" ]] && [[ "$confirm" != "Y" ]]; then
+    echo "Aborted"
+    exit 1
+fi
+
+# Create backup if requested
+backup_branch=""
+if $create_backup; then
+    backup_branch="backup-squash-$(date +%Y%m%d-%H%M%S)-$$"
+
+    # Ensure backup branch doesn't exist
+    if git rev-parse --verify "$backup_branch" >/dev/null 2>&1; then
+        echo -e "${RED}Error: Backup branch $backup_branch already exists${NC}"
+        exit 1
+    fi
+
+    echo -e "${BLUE}Creating backup: $backup_branch${NC}"
+    git branch "$backup_branch"
+fi
+
+# Show all existing commit messages (one line each)
+echo ""
+echo -e "${BLUE}Existing commits to be squashed:${NC}"
+echo "---"
+git log --reverse --format="- %s" "$merge_base"..HEAD
+echo "---"
+echo ""
+
+# Ask user for commit message
+echo -e "${YELLOW}Enter commit message for squashed commit:${NC}"
+read -r -e -p "> " commit_msg
+
+# Validate commit message
+if [[ -z "$commit_msg" ]]; then
+    echo -e "${RED}Error: Commit message cannot be empty${NC}"
+    exit 1
+fi
+
+# Save current HEAD hash for recovery
+original_head=$(git rev-parse HEAD)
+
+# Do the squash using reset --soft
+echo -e "${BLUE}Squashing commits...${NC}"
+if ! git reset --soft "$merge_base"; then
+    echo -e "${RED}Error: Failed to reset${NC}"
+    if [[ -n "$backup_branch" ]]; then
+        git reset --hard "$backup_branch"
+        echo -e "${YELLOW}Restored from backup${NC}"
+        git branch -D "$backup_branch"
+    else
+        git reset --hard "$original_head"
+    fi
+    exit 1
+fi
+
+# Create commit with user-provided message
+if git commit -m "$commit_msg"; then
+    # Success
+    echo ""
+    echo -e "${GREEN}✓ Successfully squashed $commit_count commit(s)!${NC}"
+
+    # Remove backup if it exists
+    if [[ -n "$backup_branch" ]]; then
+        echo -e "${BLUE}Removing backup...${NC}"
+        git branch -D "$backup_branch" >/dev/null 2>&1
+    fi
+
+    # Check if we need to force push
+    if git rev-parse --verify "origin/$current_branch" >/dev/null 2>&1; then
+        echo ""
+        echo -e "${YELLOW}Note: Branch was previously pushed. You'll need to:${NC}"
+        echo -e "${YELLOW}  git push --force-with-lease${NC}"
+    fi
+else
+    # Failure or cancelled
+    echo ""
+    echo -e "${RED}✗ Squash cancelled or failed${NC}"
+
+    if [[ -n "$backup_branch" ]]; then
+        # Restore from backup
+        echo -e "${BLUE}Restoring from backup...${NC}"
+        git reset --hard "$backup_branch"
+        echo ""
+        echo -e "${YELLOW}⚠️  Backup preserved as: $backup_branch${NC}"
+        echo -e "${YELLOW}To manually restore later: git reset --hard $backup_branch${NC}"
+        echo -e "${YELLOW}To delete backup: git branch -D $backup_branch${NC}"
+    else
+        # No backup - restore directly
+        echo -e "${BLUE}Restoring original state...${NC}"
+        git reset --hard "$original_head"
+    fi
+    exit 1
+fi
+
+echo -e "${GREEN}Done!${NC}"

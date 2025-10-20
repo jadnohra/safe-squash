@@ -1,0 +1,23 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Make script executable
+      run: chmod +x ./safe-squash
+
+    - name: Run test suite
+      run: ./safe-squash --test
+
+    - name: Verify script runs with --help
+      run: ./safe-squash --help
