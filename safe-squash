@@ -32,16 +32,24 @@ if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
     echo "safe-squash - Squash all commits since main/parent branch"
     echo ""
     echo "Usage:"
-    echo "  safe-squash           # Default (safe, restores if cancelled)"
-    echo "  safe-squash --backup  # Extra safety (keeps backup branch on failure)"
-    echo "  safe-squash --test    # Run integrated test suite"
+    echo "  safe-squash                    # Default (uses origin/main if available)"
+    echo "  safe-squash --backup           # Extra safety (keeps backup branch on failure)"
+    echo "  safe-squash --local            # Use local main/master instead of origin/main"
+    echo "  safe-squash --backup --local   # Combine flags"
+    echo "  safe-squash --test             # Run integrated test suite"
     echo ""
     echo "How it works:"
-    echo "  1. Finds where your branch diverged from main/master/parent"
+    echo "  1. Finds where your branch diverged from base (origin/main or main)"
     echo "  2. Shows all commits to be squashed"
     echo "  3. Asks for confirmation (cancel = no changes)"
     echo "  4. Squashes commits into one (preserves all changes)"
     echo "  5. Opens editor for commit message"
+    echo ""
+    echo "Base branch selection:"
+    echo "  Default: Uses origin/main (or origin/master) if available"
+    echo "           Falls back to local main/master if no remote exists"
+    echo "           Warns if local and remote are out of sync"
+    echo "  --local: Forces use of local main/master branch"
     echo ""
     echo "Backup modes:"
     echo "  Default: Safe, restores original state if you cancel"
@@ -64,70 +72,34 @@ if [[ "$1" == "--test" ]]; then
     tests_failed=0
 
     # Test helper functions
-    pass() {
-        echo -e "${GREEN}✓${NC} $1"
-        ((tests_passed++))
-    }
-
-    fail() {
-        echo -e "${RED}✗${NC} $1"
-        ((tests_failed++))
-    }
-
-    info() {
-        echo -e "${GRAY}  $1${NC}"
-    }
-
-    run_test() {
-        local test_name="$1"
-        echo ""
-        echo -e "${TREE}─────────────────────────────────────────────${NC}"
-        echo -e "${BLUE}$test_name${NC}"
-    }
+    pass() { echo -e "${GREEN}✓${NC} $1"; ((tests_passed++)); return 0; }
+    fail() { echo -e "${RED}✗${NC} $1"; ((tests_failed++)); return 1; }
+    info() { echo -e "${GRAY}  $1${NC}"; }
+    run_test() { echo ""; echo -e "${TREE}─────────────────────────────────────────────${NC}"; echo -e "${BLUE}$1${NC}"; }
 
     # Create a test repository
     create_test_repo() {
-        local repo_dir="$1"
-        mkdir -p "$repo_dir"
-        cd "$repo_dir"
-        git init -b main > /dev/null
-        git config user.email "test@example.com"
-        git config user.name "Test User"
-        echo "Initial content" > file.txt
-        git add file.txt
-        git commit -m "Initial commit" > /dev/null
+        mkdir -p "$1" && cd "$1"
+        git init -b main > /dev/null && git config user.email "test@example.com" && git config user.name "Test User"
+        echo "Initial content" > file.txt && git add file.txt && git commit -m "Initial commit" > /dev/null
     }
-
     # Create a feature branch with multiple commits
     create_feature_branch() {
-        local branch_name="$1"
-        local num_commits="$2"
-        git checkout -b "$branch_name" > /dev/null
-        for i in $(seq 1 "$num_commits"); do
-            echo "Change $i" >> file.txt
-            git add file.txt
-            git commit -m "Commit $i on $branch_name" > /dev/null
-        done
+        git checkout -b "$1" > /dev/null
+        for i in $(seq 1 "$2"); do echo "Change $i" >> file.txt && git add file.txt && git commit -m "Commit $i on $1" > /dev/null; done
     }
 
     # Test 1: Basic squash without backup
     test_basic_squash() {
         run_test "Basic squash without backup"
-        local test_dir="$TEST_BASE_DIR/test1"
-        create_test_repo "$test_dir"
-        create_feature_branch "feature1" 3
+        create_test_repo "$TEST_BASE_DIR/test1" && create_feature_branch "feature1" 3
         local commits_before=$(git rev-list --count main..HEAD)
         local content_before=$(cat file.txt)
-        info "Created 3 commits on feature1"
-        info "Running squash..."
         { echo "y"; echo "Test squash commit"; } | "$SCRIPT_PATH" > /dev/null 2>&1 || true
         local commits_after=$(git rev-list --count main..HEAD)
         local content_after=$(cat file.txt)
-        if [[ "$commits_before" -eq 3 ]] && [[ "$commits_after" -eq 1 ]] && [[ "$content_before" == "$content_after" ]]; then
-            pass "Squashed 3 commits into 1, content preserved"
-        else
-            fail "Expected 1 commit after squash, got $commits_after (before: $commits_before)"
-        fi
+        [[ "$commits_before" -eq 3 && "$commits_after" -eq 1 && "$content_before" == "$content_after" ]] && \
+            pass "Squashed 3 commits into 1, content preserved" || fail "Expected 1 commit after squash, got $commits_after"
         cd "$ORIGINAL_DIR" 2>/dev/null || cd /tmp
     }
 
@@ -137,7 +109,6 @@ if [[ "$1" == "--test" ]]; then
         local test_dir="$TEST_BASE_DIR/test2"
         create_test_repo "$test_dir"
         create_feature_branch "feature2" 2
-        info "Created 2 commits on feature2"
         info "Running squash with --backup..."
         { echo "y"; echo "Test squash with backup"; } | "$SCRIPT_PATH" --backup > /dev/null 2>&1 || true
         local commits_after=$(git rev-list --count main..HEAD)
@@ -158,8 +129,6 @@ if [[ "$1" == "--test" ]]; then
         create_feature_branch "feature3" 3
         local commits_before=$(git rev-list --count main..HEAD)
         local head_before=$(git rev-parse HEAD)
-        info "Created 3 commits on feature3"
-        info "Cancelling squash (answer 'n')..."
         echo "n" | "$SCRIPT_PATH" > /dev/null 2>&1 || true
         local commits_after=$(git rev-list --count main..HEAD)
         local head_after=$(git rev-parse HEAD)
@@ -179,7 +148,6 @@ if [[ "$1" == "--test" ]]; then
         create_feature_branch "feature4" 2
         echo "Uncommitted change" >> file.txt
         info "Created uncommitted changes"
-        info "Running squash (should fail)..."
         if "$SCRIPT_PATH" > /dev/null 2>&1; then
             fail "Squash should have failed with dirty working directory"
         else
@@ -194,7 +162,6 @@ if [[ "$1" == "--test" ]]; then
         local test_dir="$TEST_BASE_DIR/test5"
         create_test_repo "$test_dir"
         info "On main branch"
-        info "Running squash (should fail)..."
         if "$SCRIPT_PATH" > /dev/null 2>&1; then
             fail "Squash should have failed on main branch"
         else
@@ -209,8 +176,6 @@ if [[ "$1" == "--test" ]]; then
         local test_dir="$TEST_BASE_DIR/test6"
         create_test_repo "$test_dir"
         git checkout -b feature5 > /dev/null
-        info "Created branch with no new commits"
-        info "Running squash..."
         if "$SCRIPT_PATH" > /dev/null 2>&1; then
             pass "Correctly handled branch with no commits to squash"
         else
@@ -234,8 +199,6 @@ if [[ "$1" == "--test" ]]; then
         local file1_before=$(cat file.txt)
         local file2_before=$(cat file2.txt)
         local file3_before=$(cat file3.txt)
-        info "Created 7 commits with 3 files"
-        info "Running squash..."
         { echo "y"; echo "Test content integrity squash"; } | "$SCRIPT_PATH" > /dev/null 2>&1 || true
         local file1_after=$(cat file.txt)
         local file2_after=$(cat file2.txt)
@@ -256,8 +219,6 @@ if [[ "$1" == "--test" ]]; then
         local test_dir="$TEST_BASE_DIR/test8"
         create_test_repo "$test_dir"
         create_feature_branch "feature8" 2
-        info "Created 2 commits"
-        info "Providing empty commit message..."
         { echo "y"; echo ""; } | "$SCRIPT_PATH" > /dev/null 2>&1
         local exit_code=$?
         if [[ $exit_code -ne 0 ]]; then
@@ -275,7 +236,6 @@ if [[ "$1" == "--test" ]]; then
         create_test_repo "$test_dir"
         create_feature_branch "feature9" 1
         info "Created 1 commit"
-        info "Running squash..."
         { echo "y"; echo "Single commit squashed"; } | "$SCRIPT_PATH" > /dev/null 2>&1 || true
         local commits_after=$(git rev-list --count main..HEAD)
         if [[ $commits_after -eq 1 ]]; then
@@ -297,7 +257,6 @@ if [[ "$1" == "--test" ]]; then
         git checkout HEAD~0 > /dev/null 2>&1
 
         info "Detached HEAD state"
-        info "Running squash (should fail)..."
 
         if "$SCRIPT_PATH" > /dev/null 2>&1; then
             fail "Squash should have failed with detached HEAD"
@@ -329,7 +288,6 @@ if [[ "$1" == "--test" ]]; then
         git merge main > /dev/null 2>&1 || true
 
         info "Merge in progress with conflicts"
-        info "Running squash (should fail)..."
 
         if "$SCRIPT_PATH" > /dev/null 2>&1; then
             fail "Squash should have failed with merge in progress"
@@ -361,7 +319,6 @@ if [[ "$1" == "--test" ]]; then
         git rebase main > /dev/null 2>&1 || true
 
         info "Rebase in progress with conflicts"
-        info "Running squash (should fail)..."
 
         if "$SCRIPT_PATH" > /dev/null 2>&1; then
             fail "Squash should have failed with rebase in progress"
@@ -396,7 +353,6 @@ if [[ "$1" == "--test" ]]; then
         git cherry-pick "$cherry_commit" > /dev/null 2>&1 || true
 
         info "Cherry-pick in progress with conflicts"
-        info "Running squash (should fail)..."
 
         if "$SCRIPT_PATH" > /dev/null 2>&1; then
             fail "Squash should have failed with cherry-pick in progress"
@@ -439,6 +395,344 @@ if [[ "$1" == "--test" ]]; then
     }
     trap cleanup_tests EXIT
 
+    # Test 16: Squash to origin/main (default behavior)
+    test_squash_to_origin_main() {
+        run_test "Squash to origin/main (default)"
+        local test_dir="$TEST_BASE_DIR/test16"
+        create_test_repo "$test_dir"
+
+        # Create a bare remote
+        local remote_dir="$TEST_BASE_DIR/remote16"
+        git clone --bare "$test_dir" "$remote_dir" > /dev/null 2>&1
+
+        # Add remote to test repo
+        cd "$test_dir"
+        git remote add origin "$remote_dir"
+        git fetch origin > /dev/null 2>&1
+        git branch -u origin/main main > /dev/null 2>&1
+
+        # Create feature branch
+        create_feature_branch "feature16" 2
+
+        local commits_before=$(git rev-list --count origin/main..HEAD)
+
+        { echo "y"; echo "Test squash to origin/main"; } | "$SCRIPT_PATH" > /dev/null 2>&1 || true
+
+        local commits_after=$(git rev-list --count origin/main..HEAD)
+        if [[ "$commits_before" -eq 2 ]] && [[ "$commits_after" -eq 1 ]]; then
+            pass "Squashed to origin/main by default"
+        else
+            fail "Expected 1 commit after squash to origin/main, got $commits_after"
+        fi
+        cd "$ORIGINAL_DIR" 2>/dev/null || cd /tmp
+    }
+
+    # Test 17: Squash with --local flag
+    test_squash_with_local_flag() {
+        run_test "Squash with --local flag"
+        local test_dir="$TEST_BASE_DIR/test17"
+        create_test_repo "$test_dir"
+
+        # Create a bare remote
+        local remote_dir="$TEST_BASE_DIR/remote17"
+        git clone --bare "$test_dir" "$remote_dir" > /dev/null 2>&1
+
+        # Add remote to test repo
+        cd "$test_dir"
+        git remote add origin "$remote_dir"
+        git fetch origin > /dev/null 2>&1
+        git branch -u origin/main main > /dev/null 2>&1
+
+        # Create feature branch
+        create_feature_branch "feature17" 2
+
+        info "Running squash with --local flag..."
+
+        { echo "y"; echo "Test squash with --local"; } | "$SCRIPT_PATH" --local > /dev/null 2>&1 || true
+
+        local commits_after=$(git rev-list --count main..HEAD)
+        if [[ "$commits_after" -eq 1 ]]; then
+            pass "Squashed to local main with --local flag"
+        else
+            fail "Expected 1 commit after squash, got $commits_after"
+        fi
+        cd "$ORIGINAL_DIR" 2>/dev/null || cd /tmp
+    }
+
+    # Test 18: Out-of-sync detection
+    test_out_of_sync_detection() {
+        run_test "Out-of-sync local/remote detection"
+        local test_dir="$TEST_BASE_DIR/test18"
+        create_test_repo "$test_dir"
+
+        # Create a bare remote
+        local remote_dir="$TEST_BASE_DIR/remote18"
+        git clone --bare "$test_dir" "$remote_dir" > /dev/null 2>&1
+
+        # Add remote and make local behind
+        cd "$test_dir"
+        git remote add origin "$remote_dir"
+        git fetch origin > /dev/null 2>&1
+        git branch -u origin/main main > /dev/null 2>&1
+
+        # Add commit to remote (simulating other developer's work)
+        git checkout main > /dev/null 2>&1
+        echo "Remote change" >> file.txt
+        git add file.txt
+        git commit -m "Remote commit" > /dev/null 2>&1
+        git push origin main > /dev/null 2>&1
+
+        # Reset local main to be behind
+        git reset --hard HEAD~1 > /dev/null 2>&1
+
+        # Create feature branch
+        create_feature_branch "feature18" 1
+
+        info "Local main is behind origin/main"
+
+        # Choose option 1 (origin/main)
+        { echo "1"; echo "y"; echo "Test out of sync"; } | "$SCRIPT_PATH" 2>&1 | grep -q "out of sync"
+        local grep_result=$?
+
+        if [[ $grep_result -eq 0 ]]; then
+            pass "Detected and warned about out-of-sync branches"
+        else
+            fail "Should have detected out-of-sync branches"
+        fi
+        cd "$ORIGINAL_DIR" 2>/dev/null || cd /tmp
+    }
+
+    # Test 19: Fallback to local when no remote exists
+    test_no_remote_fallback() {
+        run_test "Fallback to local main when no remote"
+        local test_dir="$TEST_BASE_DIR/test19"
+        create_test_repo "$test_dir"
+        create_feature_branch "feature19" 2
+
+        info "No remote exists, only local main"
+
+        { echo "y"; echo "Test fallback to local"; } | "$SCRIPT_PATH" > /dev/null 2>&1 || true
+
+        local commits_after=$(git rev-list --count main..HEAD)
+        if [[ "$commits_after" -eq 1 ]]; then
+            pass "Fell back to local main when no remote exists"
+        else
+            fail "Expected 1 commit after squash, got $commits_after"
+        fi
+        cd "$ORIGINAL_DIR" 2>/dev/null || cd /tmp
+    }
+
+    # Test 20: Local ahead of remote
+    test_local_ahead_of_remote() {
+        run_test "Local ahead of remote (choose option 2)"
+        local test_dir="$TEST_BASE_DIR/test20"
+        create_test_repo "$test_dir"
+
+        # Create a bare remote
+        local remote_dir="$TEST_BASE_DIR/remote20"
+        git clone --bare "$test_dir" "$remote_dir" > /dev/null 2>&1
+
+        cd "$test_dir"
+        git remote add origin "$remote_dir"
+        git fetch origin > /dev/null 2>&1
+        git branch -u origin/main main > /dev/null 2>&1
+
+        # Add commit to local main (ahead of remote)
+        git checkout main > /dev/null 2>&1
+        echo "Local ahead change" >> file.txt
+        git add file.txt
+        git commit -m "Local commit" > /dev/null 2>&1
+
+        # Create feature branch
+        create_feature_branch "feature20" 1
+
+        info "Local main is ahead of origin/main"
+        info "Running squash, choosing option 2 (local main)..."
+
+        # Choose option 2 (local main)
+        { echo "2"; echo "y"; echo "Test local ahead"; } | "$SCRIPT_PATH" > /dev/null 2>&1 || true
+
+        local commits_after=$(git rev-list --count main..HEAD)
+        if [[ "$commits_after" -eq 1 ]]; then
+            pass "User chose local main when ahead of remote"
+        else
+            fail "Expected 1 commit after squash, got $commits_after"
+        fi
+        cd "$ORIGINAL_DIR" 2>/dev/null || cd /tmp
+    }
+
+    # Test 21: Diverged branches (both ahead and behind)
+    test_diverged_branches() {
+        run_test "Diverged branches (local and remote differ)"
+        local test_dir="$TEST_BASE_DIR/test21"
+        create_test_repo "$test_dir"
+
+        # Create a bare remote
+        local remote_dir="$TEST_BASE_DIR/remote21"
+        git clone --bare "$test_dir" "$remote_dir" > /dev/null 2>&1
+
+        cd "$test_dir"
+        git remote add origin "$remote_dir"
+        git fetch origin > /dev/null 2>&1
+        git branch -u origin/main main > /dev/null 2>&1
+
+        # Add commit to remote
+        git checkout main > /dev/null 2>&1
+        echo "Remote change" >> file.txt
+        git add file.txt
+        git commit -m "Remote commit" > /dev/null 2>&1
+        git push origin main > /dev/null 2>&1
+
+        # Reset and add different commit to local
+        git reset --hard HEAD~1 > /dev/null 2>&1
+        echo "Local change" >> file.txt
+        git add file.txt
+        git commit -m "Local commit" > /dev/null 2>&1
+
+        # Create feature branch
+        create_feature_branch "feature21" 1
+
+        info "Local and remote have diverged"
+
+        # Should show both ahead and behind counts
+        { echo "1"; echo "y"; echo "Test diverged"; } | "$SCRIPT_PATH" 2>&1 | grep -q "ahead"
+        local grep_result=$?
+
+        if [[ $grep_result -eq 0 ]]; then
+            pass "Detected diverged branches"
+        else
+            fail "Should have detected diverged branches"
+        fi
+        cd "$ORIGINAL_DIR" 2>/dev/null || cd /tmp
+    }
+
+    # Test 22: origin/master fallback (no origin/main)
+    test_origin_master_fallback() {
+        run_test "Use origin/master when origin/main doesn't exist"
+        local test_dir="$TEST_BASE_DIR/test22"
+        mkdir -p "$test_dir"
+        cd "$test_dir"
+        git init -b master > /dev/null 2>&1
+        git config user.email "test@example.com"
+        git config user.name "Test User"
+        echo "Initial content" > file.txt
+        git add file.txt
+        git commit -m "Initial commit" > /dev/null 2>&1
+
+        # Create a bare remote
+        local remote_dir="$TEST_BASE_DIR/remote22"
+        git clone --bare "$test_dir" "$remote_dir" > /dev/null 2>&1
+
+        cd "$test_dir"
+        git remote add origin "$remote_dir"
+        git fetch origin > /dev/null 2>&1
+        git branch -u origin/master master > /dev/null 2>&1
+
+        # Create feature branch
+        git checkout -b feature22 > /dev/null 2>&1
+        echo "Change 1" >> file.txt
+        git add file.txt
+        git commit -m "Feature commit" > /dev/null 2>&1
+
+        info "Repository uses master (not main)"
+
+        { echo "y"; echo "Test origin/master"; } | "$SCRIPT_PATH" > /dev/null 2>&1 || true
+
+        local commits_after=$(git rev-list --count origin/master..HEAD)
+        if [[ "$commits_after" -eq 1 ]]; then
+            pass "Used origin/master when origin/main doesn't exist"
+        else
+            fail "Expected 1 commit after squash, got $commits_after"
+        fi
+        cd "$ORIGINAL_DIR" 2>/dev/null || cd /tmp
+    }
+
+    # Test 23: Combine --local and --backup flags
+    test_local_and_backup_flags() {
+        run_test "Combine --local and --backup flags"
+        local test_dir="$TEST_BASE_DIR/test23"
+        create_test_repo "$test_dir"
+
+        # Create a bare remote
+        local remote_dir="$TEST_BASE_DIR/remote23"
+        git clone --bare "$test_dir" "$remote_dir" > /dev/null 2>&1
+
+        cd "$test_dir"
+        git remote add origin "$remote_dir"
+        git fetch origin > /dev/null 2>&1
+
+        create_feature_branch "feature23" 2
+
+        info "Running squash with both flags..."
+
+        { echo "y"; echo "Test both flags"; } | "$SCRIPT_PATH" --local --backup > /dev/null 2>&1 || true
+
+        local commits_after=$(git rev-list --count main..HEAD)
+        local backup_count=$(git branch | grep -c "backup-squash" || true)
+
+        if [[ "$commits_after" -eq 1 ]] && [[ "$backup_count" -eq 0 ]]; then
+            pass "Both --local and --backup flags work together"
+        else
+            fail "Expected 1 commit and 0 backups, got $commits_after commits and $backup_count backups"
+        fi
+        cd "$ORIGINAL_DIR" 2>/dev/null || cd /tmp
+    }
+
+    # Test 24: No local main, only origin/main (fresh clone scenario)
+    test_no_local_main_only_origin() {
+        run_test "No local main, only origin/main exists"
+        local test_dir="$TEST_BASE_DIR/test24"
+        create_test_repo "$test_dir"
+
+        # Create a bare remote
+        local remote_dir="$TEST_BASE_DIR/remote24"
+        git clone --bare "$test_dir" "$remote_dir" > /dev/null 2>&1
+
+        cd "$test_dir"
+        git remote add origin "$remote_dir"
+        git fetch origin > /dev/null 2>&1
+
+        # Delete local main branch (simulate fresh clone where user never checked it out)
+        git checkout -b feature24 > /dev/null 2>&1
+        git branch -D main > /dev/null 2>&1
+
+        # Add commits to feature
+        echo "Change 1" >> file.txt
+        git add file.txt
+        git commit -m "Feature commit 1" > /dev/null 2>&1
+        echo "Change 2" >> file.txt
+        git add file.txt
+        git commit -m "Feature commit 2" > /dev/null 2>&1
+
+        info "No local main, only origin/main exists"
+
+        { echo "y"; echo "Test no local main"; } | "$SCRIPT_PATH" > /dev/null 2>&1 || true
+
+        local commits_after=$(git rev-list --count origin/main..HEAD)
+        if [[ "$commits_after" -eq 1 ]]; then
+            pass "Used origin/main when local main doesn't exist"
+        else
+            fail "Expected 1 commit after squash, got $commits_after"
+        fi
+        cd "$ORIGINAL_DIR" 2>/dev/null || cd /tmp
+    }
+
+    # Test 25: Invalid flag combination or unknown flag
+    test_invalid_flag() {
+        run_test "Unknown flag (should fail gracefully)"
+        local test_dir="$TEST_BASE_DIR/test25"
+        create_test_repo "$test_dir"
+        create_feature_branch "feature25" 1
+
+
+        if "$SCRIPT_PATH" --invalid > /dev/null 2>&1; then
+            fail "Should have rejected unknown flag"
+        else
+            pass "Correctly rejected unknown flag"
+        fi
+        cd "$ORIGINAL_DIR" 2>/dev/null || cd /tmp
+    }
+
     # Run all tests
     echo -e "${TREE}─────────────────────────────────────────────${NC}"
     echo -e "${BOLD}squash test suite${NC}"
@@ -458,6 +752,16 @@ if [[ "$1" == "--test" ]]; then
     test_merge_in_progress
     test_rebase_in_progress
     test_cherrypick_in_progress
+    test_squash_to_origin_main
+    test_squash_with_local_flag
+    test_out_of_sync_detection
+    test_no_remote_fallback
+    test_local_ahead_of_remote
+    test_diverged_branches
+    test_origin_master_fallback
+    test_local_and_backup_flags
+    test_no_local_main_only_origin
+    test_invalid_flag
 
     # Summary
     echo ""
@@ -474,10 +778,26 @@ fi
 
 # Parse arguments
 create_backup=false
-if [[ "$1" == "--backup" ]]; then
-    create_backup=true
-    echo -e "${BLUE}Backup mode enabled${NC}"
-fi
+use_local_base=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --backup)
+            create_backup=true
+            echo -e "${BLUE}Backup mode enabled${NC}"
+            shift
+            ;;
+        --local)
+            use_local_base=true
+            shift
+            ;;
+        *)
+            echo -e "${RED}Error: Unknown option: $1${NC}"
+            echo "Run 'safe-squash --help' for usage"
+            exit 1
+            ;;
+    esac
+done
 
 # Check if we're in a git repository
 if ! git rev-parse --git-dir > /dev/null 2>&1; then
@@ -528,36 +848,105 @@ fi
 # Find the base branch (main, master, or parent)
 base_branch=""
 
-# Check for main/master
-if git rev-parse --verify main >/dev/null 2>&1; then
-    base_branch="main"
-elif git rev-parse --verify master >/dev/null 2>&1; then
-    base_branch="master"
-else
-    # Try to find parent branch (where we branched from)
-    # This finds the branch that our current branch diverged from
-    parent=$(git show-branch -a 2>/dev/null \
-        | grep '\*' \
-        | grep -v "$current_branch" \
-        | head -n1 \
-        | sed 's/.*\[\(.*\)\].*/\1/' \
-        | sed 's/[\^~].*//')
+if $use_local_base; then
+    # Use local branches only (legacy behavior with --local flag)
+    if git rev-parse --verify main >/dev/null 2>&1; then
+        base_branch="main"
+    elif git rev-parse --verify master >/dev/null 2>&1; then
+        base_branch="master"
+    else
+        # Try to find parent branch (where we branched from)
+        parent=$(git show-branch -a 2>/dev/null \
+            | grep '\*' \
+            | grep -v "$current_branch" \
+            | head -n1 \
+            | sed 's/.*\[\(.*\)\].*/\1/' \
+            | sed 's/[\^~].*//')
 
-    if [[ -n "$parent" ]]; then
-        echo -e "${YELLOW}Detected parent branch: $parent${NC}"
-        echo -n "Squash to [1] $parent or [2] main/master? (1/2): "
-        read -r choice
-        if [[ "$choice" == "2" ]]; then
-            if git rev-parse --verify main >/dev/null 2>&1; then
-                base_branch="main"
-            elif git rev-parse --verify master >/dev/null 2>&1; then
-                base_branch="master"
+        if [[ -n "$parent" ]]; then
+            echo -e "${YELLOW}Detected parent branch: $parent${NC}"
+            echo -n "Squash to [1] $parent or [2] main/master? (1/2): "
+            read -r choice
+            if [[ "$choice" == "2" ]]; then
+                if git rev-parse --verify main >/dev/null 2>&1; then
+                    base_branch="main"
+                elif git rev-parse --verify master >/dev/null 2>&1; then
+                    base_branch="master"
+                else
+                    echo -e "${RED}Error: main/master branch not found${NC}"
+                    exit 1
+                fi
             else
-                echo -e "${RED}Error: main/master branch not found${NC}"
-                exit 1
+                base_branch="$parent"
             fi
-        else
-            base_branch="$parent"
+        fi
+    fi
+else
+    # Default: prefer remote tracking branches (origin/main or origin/master)
+    local_branch=""
+    remote_branch=""
+
+    # Check for remote tracking branches first
+    if git rev-parse --verify origin/main >/dev/null 2>&1; then
+        remote_branch="origin/main"
+    elif git rev-parse --verify origin/master >/dev/null 2>&1; then
+        remote_branch="origin/master"
+    fi
+
+    # Check for local branches
+    if git rev-parse --verify main >/dev/null 2>&1; then
+        local_branch="main"
+    elif git rev-parse --verify master >/dev/null 2>&1; then
+        local_branch="master"
+    fi
+
+    # Decide which to use
+    if [[ -n "$remote_branch" ]]; then
+        base_branch="$remote_branch"
+
+        # If both local and remote exist, check if they're in sync
+        if [[ -n "$local_branch" ]]; then
+            local_hash=$(git rev-parse "$local_branch")
+            remote_hash=$(git rev-parse "$remote_branch")
+
+            if [[ "$local_hash" != "$remote_hash" ]]; then
+                # Check if local is behind remote
+                behind_count=$(git rev-list --count "$local_branch..$remote_branch" 2>/dev/null || echo "0")
+                ahead_count=$(git rev-list --count "$remote_branch..$local_branch" 2>/dev/null || echo "0")
+
+                echo -e "${YELLOW}Warning: Local $local_branch and $remote_branch are out of sync${NC}"
+                if [[ "$behind_count" -gt 0 ]]; then
+                    echo -e "${YELLOW}  Local $local_branch is $behind_count commit(s) behind $remote_branch${NC}"
+                fi
+                if [[ "$ahead_count" -gt 0 ]]; then
+                    echo -e "${YELLOW}  Local $local_branch is $ahead_count commit(s) ahead of $remote_branch${NC}"
+                fi
+                echo ""
+                echo -n "Squash to [1] $remote_branch (recommended) or [2] local $local_branch? (1/2): "
+                read -r choice
+                if [[ "$choice" == "2" ]]; then
+                    base_branch="$local_branch"
+                fi
+            fi
+        fi
+    elif [[ -n "$local_branch" ]]; then
+        base_branch="$local_branch"
+    else
+        # Try to find parent branch (where we branched from)
+        parent=$(git show-branch -a 2>/dev/null \
+            | grep '\*' \
+            | grep -v "$current_branch" \
+            | head -n1 \
+            | sed 's/.*\[\(.*\)\].*/\1/' \
+            | sed 's/[\^~].*//')
+
+        if [[ -n "$parent" ]]; then
+            echo -e "${YELLOW}Detected parent branch: $parent${NC}"
+            echo -n "Use $parent as base? (y/N): "
+            read -r choice
+            if [[ "$choice" == "y" ]] || [[ "$choice" == "Y" ]]; then
+                base_branch="$parent"
+            fi
         fi
     fi
 fi

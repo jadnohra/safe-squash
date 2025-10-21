@@ -29,11 +29,17 @@ sudo ln -s "$PWD/safe-squash" /usr/local/bin/safe-squash
 ## Usage
 
 ```bash
-# Default mode (safe, restores if cancelled)
+# Default mode (uses origin/main, safe, restores if cancelled)
 safe-squash
 
 # Extra safety mode (keeps backup branch on failure)
 safe-squash --backup
+
+# Use local main/master instead of origin/main
+safe-squash --local
+
+# Combine flags
+safe-squash --backup --local
 
 # Run integrated test suite
 safe-squash --test
@@ -44,13 +50,31 @@ safe-squash --help
 
 ## How It Works
 
-1. Detects where your branch diverged from main/master/parent
+1. Detects where your branch diverged from base branch (origin/main by default)
 2. Shows you all commits that will be squashed
 3. Asks for confirmation
 4. Uses `git reset --soft` to stage all changes
 5. Opens editor for new commit message (pre-filled with all messages)
 6. Success: cleanup, done!
 7. Failure: restore from backup (if using --backup)
+
+## Base Branch Selection
+
+**Default behavior (recommended):**
+- Uses `origin/main` or `origin/master` if available (the remote tracking branch)
+- Falls back to local `main`/`master` if no remote exists
+- Automatically detects if local and remote are out of sync
+- Prompts you to choose when they differ
+
+**With `--local` flag:**
+- Forces use of local `main` or `master` branch
+- Skips all remote checks
+- Useful for offline work or specific workflows
+
+**Why prefer remote?**
+- `origin/main` is the source of truth in collaborative workflows
+- Prevents squashing to outdated local branches
+- Ensures your squashed commit has the correct base
 
 ## Safety & Backup Modes
 
@@ -76,7 +100,7 @@ Both modes are safe - they differ in how they handle failures:
 
 ```bash
 $ safe-squash
-Will squash 3 commit(s) since main:
+Will squash 3 commit(s) since origin/main:
 abc1234 Add type-check script
 def5678 Fix Vercel build
 ghi9012 Simplify config
@@ -91,17 +115,50 @@ Note: Branch was previously pushed. You'll need to:
   git push --force-with-lease
 ```
 
+**Example with out-of-sync detection:**
+
+```bash
+$ safe-squash
+Warning: Local main and origin/main are out of sync
+  Local main is 2 commit(s) behind origin/main
+
+Squash to [1] origin/main (recommended) or [2] local main? (1/2): 1
+Will squash 3 commit(s) since origin/main:
+...
+```
+
 ## Test Suite
 
-The script includes a comprehensive test suite that validates:
+The script includes a comprehensive test suite with **23 tests** that validate:
 
+**Core functionality:**
 - Basic squashing functionality
 - Backup creation and cleanup
 - Cancellation handling
-- Error cases (dirty working dir, main branch, detached HEAD, etc.)
-- Git operations in progress (merge, rebase, cherry-pick)
 - Content integrity preservation
-- Edge cases (empty messages, single commits)
+
+**Error cases:**
+- Dirty working directory
+- Running on main/master branch
+- Detached HEAD state
+- Git operations in progress (merge, rebase, cherry-pick)
+- Invalid flags
+
+**Remote branch handling:**
+- Squashing to origin/main by default
+- Using --local flag to force local branch
+- Out-of-sync detection (local behind remote)
+- Out-of-sync detection (local ahead of remote)
+- Diverged branches (both ahead and behind)
+- Fallback to local when no remote exists
+- Fresh clone scenario (no local main, only origin/main)
+- origin/master fallback when origin/main doesn't exist
+- Flag combinations (--local --backup)
+
+**Edge cases:**
+- Empty commit messages
+- Single commit squashing
+- No commits to squash
 
 Run tests with:
 
